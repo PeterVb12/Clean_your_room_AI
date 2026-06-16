@@ -4,8 +4,8 @@ from room import Room
 from robot import Robot
 
 if __name__ == "__main__":
-    room_width = 12
-    room_height = 12
+    room_width = 24
+    room_height = 18
     
     my_room = Room(width=room_width, height=room_height)
     my_robot = Robot(start_x=2, start_y=2)

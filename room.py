@@ -2,27 +2,65 @@ import numpy as np
 import random
 
 class Room:
-    def __init__(self, width=10, height=10):
+    def __init__(self, width=24, height=18):
         self.width = width
         self.height = height
         self.grid = np.zeros((self.height, self.width), dtype=int)
-        self._generate_obstacles()
+        self._generate_hardcoded_room()
 
     def _generate_obstacles(self):
-        furniture_templates = [(2, 2), (1, 3), (2, 1)]
-        for item_w, item_h in furniture_templates:
+        furniture_templates = [(4, 8), (10, 3), (6, 4)]
+        placed_obstacles = []  # To track coords for printing
+
+        for i, (item_w, item_h) in enumerate(furniture_templates):
             placed = False
             attempts = 0
+
+            # Randomly flip orientation before trying to place
+            if random.choice([True, False]):
+                item_w, item_h = item_h, item_w
+
             while not placed and attempts < 100:
                 attempts += 1
-                if random.choice([True, False]):
-                    item_w, item_h = item_h, item_w
-                x = random.randint(0, self.width - item_w)
-                y = random.randint(0, self.height - item_h)
-                
-                if np.all(self.grid[y:y+item_h, x:x+item_w] == 0):
-                    self.grid[y:y+item_h, x:x+item_w] = 1
+
+                # For the first two items, force them against a wall to not generate impossible level
+                if i < 2:
+                    wall = random.randint(0, 3)
+                    if wall == 0:
+                        x = random.randint(0, self.width - item_w)
+                        y = 0
+                    elif wall == 1:
+                        x = random.randint(0, self.width - item_w)
+                        y = self.height - item_h
+                    elif wall == 2:
+                        x = 0
+                        y = random.randint(0, self.height - item_h)
+                    else:
+                        x = self.width - item_w
+                        y = random.randint(0, self.height - item_h)
+                else:
+                    x = random.randint(0, self.width - item_w)
+                    y = random.randint(0, self.height - item_h)
+
+                if x < 0 or y < 0 or x + item_w > self.width or y + item_h > self.height:
+                    continue
+
+                if np.all(self.grid[y:y + item_h, x:x + item_w] == 0):
+                    self.grid[y:y + item_h, x:x + item_w] = 1
+                    placed_obstacles.append({
+                        "item_index": i,
+                        "top_left": (x, y),
+                        "width": item_w,
+                        "height": item_h
+                    })
                     placed = True
+
+    def _generate_hardcoded_room(self):
+        self.width,self.height = 24,18
+        self.grid = np.zeros((self.height, self.width), dtype=int)
+        fixed_obstacles = [(20, 3, 4, 8),(6, 15, 10, 3), (3, 4, 6, 4)]
+        for x, y, w, h in fixed_obstacles: self.grid[y:y + h, x:x + w] = 1
+
 
     def display(self, robot_x, robot_y):
         for y in range(self.height):
