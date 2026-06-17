@@ -72,17 +72,8 @@ class RobotTrainingEnv(gym.Env):
 
         # 2. Dynamically find a valid starting position
         # We can no longer guarantee that a specific coordinate is open!
-        import random
-        valid_ys, valid_xs = np.where(self.valid_mask)
-        while True:
-            idx = random.randint(0, len(valid_xs) - 1)
-            start_x = int(valid_xs[idx])
-            start_y = int(valid_ys[idx])
-            if self.room.is_move_allowed(start_x, start_y):
-                self.robot_x = start_x
-                self.robot_y = start_y
-                break
-
+        self.robot_x = 0
+        self.robot_y = 1
         # 3. Recalculate maximum cleanable tiles for THIS specific random layout
         coverage_test_grid = np.zeros((self.room.height, self.room.width), dtype=np.uint8)
         for y in range(1, self.room.height - 1):
