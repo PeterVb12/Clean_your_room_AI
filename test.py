@@ -4,7 +4,7 @@ from robot_env import RobotTrainingEnv
 
 # 1. Instantiate the updated environment
 env = RobotTrainingEnv()
-model = PPO.load("mlp_cleaner_robot_v3")
+model = PPO.load("ppo_robot_dynamic_final")
 #mlp_cleaner_robot_v3
 #dynamic_cleaner_robot_final
 

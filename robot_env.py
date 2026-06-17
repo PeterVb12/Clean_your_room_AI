@@ -2,7 +2,6 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 from room import Room
-from collections import deque
 
 
 class RobotTrainingEnv(gym.Env):
@@ -10,126 +9,61 @@ class RobotTrainingEnv(gym.Env):
         super(RobotTrainingEnv, self).__init__()
         self.metadata = {"render_modes": ["human"]}
         self.render_mode = "human"
-        self.room = Room()  # 24x18
+        self._new_room()
 
         # Actions: 0=NORTH, 1=EAST, 2=SOUTH, 3=WEST
         self.action_space = spaces.Discrete(4)
         self.action_mapping = {0: "NORTH", 1: "EAST", 2: "SOUTH", 3: "WEST"}
 
-        # CHANGED: Flatten the 2D matrices into a 1D vector (Size: 2 * 18 * 24 = 864)
-        total_features = (2 * self.room.height * self.room.width) + 1
+        # UPGRADE: Shape is now (18, 24, 3) to pass the navigation map
         self.observation_space = spaces.Box(
             low=0,
-            high=2,
-            shape=(total_features,),
+            high=3,
+            shape=(self.room.height, self.room.width, 3),
             dtype=np.uint8
         )
-        self.max_steps = 600
-        coverage_test_grid = np.zeros((self.room.height, self.room.width), dtype=np.uint8)
-        self.valid_mask = np.zeros((self.room.height, self.room.width), dtype=bool)
-
-        for y in range(1, self.room.height - 1):
-            for x in range(1, self.room.width - 1):
-                if self.room.is_move_allowed(x, y):
-                    self.valid_mask[y, x] = True
-                    coverage_test_grid[y - 1:y + 2, x - 1:x + 2] = 1
-
-        # 3. Total cleanable tiles is the sum of all squares the footprint can physically brush over
-        self.total_cleanable_tiles = int(np.sum(coverage_test_grid))
-        print(f"Total physical tiles the 3x3 robot can reach: {self.total_cleanable_tiles}")
-
-        # Track if the previous move was a collision
-        self.last_move_failed = 0
-
+        self.max_steps = 800
 
     def _get_obs(self):
-        # 1. Channel 0: Static furniture layout
+        # Channel 0: Static furniture layouts
         channel_obstacles = self.room.grid.copy().astype(np.uint8)
 
-        # 2. Channel 1: Cleaning progress layer
+        # Channel 1: Cleaning progress layer
         channel_cleaned = self.cleaned_grid.copy()
 
-        # CHANGED: Stamp the entire 3x3 footprint of the robot onto the observation layer
-        # Since the robot center is at (robot_x, robot_y), we fill from center-1 to center+1
+        # Stamp the 3x3 footprint of the robot onto the observation layer
         y_start, y_end = self.robot_y - 1, self.robot_y + 2
         x_start, x_end = self.robot_x - 1, self.robot_x + 2
-
-        # Mark all 9 tiles of the robot's body as '2'
         channel_cleaned[y_start:y_end, x_start:x_end] = 2
 
-        # Stack the channels together
-        stacked_grid = np.stack([channel_obstacles, channel_cleaned], axis=0)
-        flattened_grid = stacked_grid.flatten()
+        # UPGRADE: Explicitly mark the center pixel as '3' so the robot tracks its pivot point
+        channel_cleaned[self.robot_y, self.robot_x] = 3
 
-        # Append the collision flag to the end
-        return np.append(flattened_grid, [self.last_move_failed]).astype(np.uint8)
+        # UPGRADE: Channel 2 is a binary navigation grid (1 = Allowed Center, 0 = Forbidden/Collision)
+        channel_navigation = self.valid_mask.astype(np.uint8)
+
+        # Stack along the last axis to make it an (18, 24, 3) image matrix
+        stacked_grid = np.stack([channel_obstacles, channel_cleaned, channel_navigation], axis=-1)
+        return stacked_grid.astype(np.uint8)
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
+        self._new_room()
 
-        # 1. Generate a completely randomized room layout on every reset
-        self.room = Room()
-
-        # 2. Dynamically find a valid starting position
-        # We can no longer guarantee that a specific coordinate is open!
-        self.robot_x = 0
+        self.robot_x = 1
         self.robot_y = 1
-        # 3. Recalculate maximum cleanable tiles for THIS specific random layout
-        coverage_test_grid = np.zeros((self.room.height, self.room.width), dtype=np.uint8)
-        for y in range(1, self.room.height - 1):
-            for x in range(1, self.room.width - 1):
-                if self.room.is_move_allowed(x, y):
-                    coverage_test_grid[y - 1:y + 2, x - 1:x + 2] = 1
 
-        self.total_cleanable_tiles = int(np.sum(coverage_test_grid))
-
-        # 4. Clear state variables and flags
         self.current_step = 0
         self.last_move_failed = 0
         self.cleaned_grid = np.zeros((self.room.height, self.room.width), dtype=np.uint8)
 
-        # 5. Clean the initial 3x3 spawn footprint immediately
+        # Clean the initial 3x3 spawn footprint
         y_start, y_end = self.robot_y - 1, self.robot_y + 2
         x_start, x_end = self.robot_x - 1, self.robot_x + 2
         self.cleaned_grid[y_start:y_end, x_start:x_end] = 1
         self.tiles_cleaned_count = int(np.sum(self.cleaned_grid))
 
         return self._get_obs(), {}
-
-    def _bfs_dirty_distances(self):
-        # any cell whose 3x3 footprint still touches unfinished dirt = BFS source
-        dirty = (self.room.grid == 0) & (self.cleaned_grid == 0)
-        H, W = self.room.height, self.room.width
-        any3 = dirty.copy()
-        for sdy in (-1, 0, 1):
-            for sdx in (-1, 0, 1):
-                if sdx == 0 and sdy == 0:
-                    continue
-                shifted = np.zeros_like(dirty)
-                ys, ye = max(0, sdy), H + min(0, sdy)
-                xs, xe = max(0, sdx), W + min(0, sdx)
-                yd, yde = max(0, -sdy), H + min(0, -sdy)
-                xd, xde = max(0, -sdx), W + min(0, -sdx)
-                shifted[yd:yde, xd:xde] = dirty[ys:ye, xs:xe]
-                any3 |= shifted
-        frontier = any3 & self.valid_mask
-
-        dist = np.full((H, W), -1, dtype=np.int32)
-        ys, xs = np.where(frontier)
-        if len(ys) == 0:
-            return None  # nothing dirty left, skip shaping
-
-        q = deque(zip(xs.tolist(), ys.tolist()))
-        dist[ys, xs] = 0
-        while q:
-            x, y = q.popleft()
-            d = dist[y, x] + 1
-            for dx, dy in ((0, -1), (0, 1), (1, 0), (-1, 0)):
-                nx, ny = x + dx, y + dy
-                if 0 <= ny < H and 0 <= nx < W and self.valid_mask[ny, nx] and dist[ny, nx] == -1:
-                    dist[ny, nx] = d
-                    q.append((nx, ny))
-        return dist
 
     def step(self, action):
         self.current_step += 1
@@ -145,35 +79,13 @@ class RobotTrainingEnv(gym.Env):
         elif direction == "WEST":
             next_x -= 1
 
-        reward = -0.01  # Tiny base clock penalty
+        reward = -0.05  # Timestep penalty
 
         if self.room.is_move_allowed(next_x, next_y):
-            # 1. Get distance before moving
-            dist_grid_old = self._bfs_dirty_distances()
-            old_dist = 0 if dist_grid_old is None else dist_grid_old[self.robot_y, self.robot_x]
-            if old_dist == -1: old_dist = 0
-
-            # 2. Execute move
             self.robot_x, self.robot_y = next_x, next_y
             self.last_move_failed = 0
 
-            # 3. Process the vacuum cleaning loop over cleaned_grid here...
-            # [Keep your current 3x3 loop that increments self.tiles_cleaned_count]
-
-            # 4. Get the fresh distance grid AFTER changes to coordinates and dirt
-            dist_grid_new = self._bfs_dirty_distances()
-            new_dist = 0 if dist_grid_new is None else dist_grid_new[self.robot_y, self.robot_x]
-            if new_dist == -1: new_dist = old_dist
-
-            # 5. Distribute reward shaping signals
-            if new_dist < old_dist:
-                reward += 0.15
-            elif new_dist > old_dist:
-                reward -= 0.15
-
-
-
-            # --- EVALUATE 3x3 VACUUM CLEANING ---
+            # Vacuum loop
             y_start, y_end = self.robot_y - 1, self.robot_y + 2
             x_start, x_end = self.robot_x - 1, self.robot_x + 2
 
@@ -186,24 +98,19 @@ class RobotTrainingEnv(gym.Env):
                         self.tiles_cleaned_count += 1
 
             if new_tiles_cleaned > 0:
-                reward += 5.0 * new_tiles_cleaned
-            else:
-                # ONLY apply backtracking penalty if we aren't moving towards a target
-                if new_dist >= old_dist:
-                    coverage_ratio = self.tiles_cleaned_count / self.total_cleanable_tiles
-                    dynamic_penalty = -0.15 * (1.0 - coverage_ratio)
-                    reward += min(dynamic_penalty, -0.01)
-
+                reward += 1.0 * new_tiles_cleaned
         else:
-            # Handle wall collisions
             self.last_move_failed = 1
-            reward += -0.25
+            reward += -0.25  # Collision penalty
+
+        coverage_ratio = self.tiles_cleaned_count / self.total_cleanable_tiles
 
         terminated = False
         truncated = False
 
-        if self.tiles_cleaned_count >= self.total_cleanable_tiles:
-            reward += 150.0 + 1.0 * (self.max_steps - self.current_step)  # early finish >> late finish
+        if coverage_ratio >= 0.95:
+            time_bonus = 0.1 * (self.max_steps - self.current_step)
+            reward += 100.0 + time_bonus
             terminated = True
 
         if self.current_step >= self.max_steps:
@@ -212,12 +119,9 @@ class RobotTrainingEnv(gym.Env):
         return self._get_obs(), reward, terminated, truncated, {}
 
     def render(self):
-        # Gymnasium triggers this check automatically.
-        # If no rendering is intended or supported, we catch it here.
         if self.render_mode is None:
             return
 
-        # Hooks directly into your original ASCII map visualizer logic
         if self.render_mode == "human":
             for y in range(self.room.height):
                 row_str = ""
@@ -227,9 +131,33 @@ class RobotTrainingEnv(gym.Env):
                     elif self.room.grid[y, x] == 1:
                         row_str += " # "
                     elif self.cleaned_grid[y, x] == 1:
-                        row_str += " o "  # Cleaned path
+                        row_str += " o "
                     else:
-                        row_str += " . "  # Dirty tile
+                        row_str += " . "
                 print(row_str)
             print(f"Progress: {self.tiles_cleaned_count}/{self.total_cleanable_tiles} tiles cleaned.")
             print("\n" + "-" * 30 + "\n")
+
+    def _new_room(self):
+        self.room = Room()
+        coverage_test_grid = np.zeros((self.room.height, self.room.width), dtype=np.uint8)
+        self.valid_mask = np.zeros((self.room.height, self.room.width), dtype=bool)
+
+        # Calculate valid masks and target metrics using a real reachability pass from (1,1)
+        seen = {(1, 1)}
+        queue = [(1, 1)]
+        head = 0
+        while head < len(queue):
+            x, y = queue[head]
+            head += 1
+            for dx, dy in ((0, -1), (0, 1), (1, 0), (-1, 0)):
+                nx, ny = x + dx, y + dy
+                if (nx, ny) not in seen and self.room.is_move_allowed(nx, ny):
+                    seen.add((nx, ny))
+                    queue.append((nx, ny))
+
+        for (cx, cy) in seen:
+            self.valid_mask[cy, cx] = True
+            coverage_test_grid[cy - 1:cy + 2, cx - 1:cx + 2] = 1
+
+        self.total_cleanable_tiles = int(np.sum(coverage_test_grid))

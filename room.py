@@ -6,8 +6,51 @@ class Room:
         self.width = width
         self.height = height
         self.grid = np.zeros((self.height, self.width), dtype=int)
+        self._generate_solvable_room()
+
+    def _generate_solvable_room(self, max_attempts=50):
+        for _ in range(max_attempts):
+            self.grid = np.zeros((self.height, self.width), dtype=int)
+            self._generate_obstacles()
+            if self._is_fully_solvable():
+                return
         self._generate_hardcoded_room()
 
+    def _is_fully_solvable(self, start_x=1, start_y=1):
+        """
+        Genuinely evaluates rooms for a 3x3 robot. Maps out the exact physical
+        footprint of all reachable center coordinates. If any empty tile is
+        left unreached (blindspots/gaps), it rejects the room.
+        """
+        if not self.is_move_allowed(start_x, start_y):
+            return False
+
+        # 1. Flood-fill (BFS) to find all reachable center coordinates from spawn
+        seen = {(start_x, start_y)}
+        queue = [(start_x, start_y)]
+        head = 0
+        while head < len(queue):
+            x, y = queue[head]
+            head += 1
+            for dx, dy in ((0, -1), (0, 1), (1, 0), (-1, 0)):
+                nx, ny = x + dx, y + dy
+                if (nx, ny) not in seen and self.is_move_allowed(nx, ny):
+                    seen.add((nx, ny))
+                    queue.append((nx, ny))
+
+        # 2. Build a coverage grid representing what the robot can actually sweep
+        accessible_vacuum_zone = np.zeros((self.height, self.width), dtype=np.uint8)
+        for (cx, cy) in seen:
+            accessible_vacuum_zone[cy-1:cy+2, cx-1:cx+2] = 1
+
+        # 3. Check for streaks or unreachable floor tiles.
+        # Every single open tile (grid == 0) MUST be covered by the vacuum zone.
+        for y in range(self.height):
+            for x in range(self.width):
+                if self.grid[y, x] == 0 and accessible_vacuum_zone[y, x] == 0:
+                    return False  # Leaves behind an unfinishable dirty spot!
+
+        return True
     def _generate_obstacles(self):
         furniture_templates = [(4, 8), (10, 3), (6, 4)]
         placed_obstacles = []  # To track coords for printing
@@ -16,14 +59,12 @@ class Room:
             placed = False
             attempts = 0
 
-            # Randomly flip orientation before trying to place
             if random.choice([True, False]):
                 item_w, item_h = item_h, item_w
 
             while not placed and attempts < 100:
                 attempts += 1
 
-                # For the first two items, force them against a wall to not generate impossible level
                 if i < 2:
                     wall = random.randint(0, 3)
                     if wall == 0:
@@ -58,7 +99,7 @@ class Room:
     def _generate_hardcoded_room(self):
         self.width,self.height = 24,18
         self.grid = np.zeros((self.height, self.width), dtype=int)
-        fixed_obstacles = [(20, 3, 4, 8),(6, 15, 10, 3), (3, 4, 6, 4)]
+        fixed_obstacles = [(20, 6, 4, 8),(6, 12, 10, 3), (0, 4, 6, 4)]
         for x, y, w, h in fixed_obstacles: self.grid[y:y + h, x:x + w] = 1
 
 
